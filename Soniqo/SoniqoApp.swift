@@ -9,9 +9,14 @@ import SwiftUI
 
 @main
 struct SoniqoApp: App {
+    @StateObject private var controller = SoniqoController()
+
     var body: some Scene {
-        WindowGroup {
-            ContentView()
+        MenuBarExtra {
+            MenuBarView(controller: controller)
+        } label: {
+            Label("Soniqo", systemImage: controller.isEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
         }
+        .menuBarExtraStyle(.window)
     }
 }

@@ -9,16 +9,13 @@ import SwiftUI
 
 struct ContentView: View {
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Soniqo runs from the menu bar.", systemImage: "speaker.wave.2.fill")
+                .font(.headline)
+            Text("Use the menu bar icon to configure automatic system output switching.")
+                .foregroundStyle(.secondary)
         }
-        .padding()
+        .padding(24)
+        .frame(width: 360)
     }
-}
-
-#Preview {
-    ContentView()
 }

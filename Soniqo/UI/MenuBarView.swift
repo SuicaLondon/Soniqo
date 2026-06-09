@@ -10,6 +10,10 @@ struct MenuBarView: View {
             Divider()
 
             status
+
+            Divider()
+
+            footer
         }
         .frame(width: 320)
         .padding(12)
@@ -39,6 +43,16 @@ struct MenuBarView: View {
         }
     }
 
+    private var footer: some View {
+        Button(role: .destructive) {
+            NSApplication.shared.terminate(nil)
+        } label: {
+            Label("Quit Soniqo", systemImage: "power")
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(MenuActionButtonStyle())
+    }
+
     private var status: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label(controller.isEnabled ? "Automatic switching enabled" : "Automatic switching disabled",
@@ -47,7 +61,6 @@ struct MenuBarView: View {
 
             if let window = controller.trackedWindow {
                 LabeledContent("Window", value: window.displayName)
-                LabeledContent("Window frame", value: window.frame.debugDescription)
             }
 
             if let display = controller.trackedDisplay {
@@ -74,5 +87,24 @@ struct MenuBarView: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .font(.caption)
+    }
+}
+
+private struct MenuActionButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.callout.weight(.semibold))
+            .foregroundStyle(.red)
+            .padding(.vertical, 8)
+            .padding(.horizontal, 12)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.red.opacity(configuration.isPressed ? 0.18 : 0.10))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.red.opacity(configuration.isPressed ? 0.35 : 0.20), lineWidth: 1)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }

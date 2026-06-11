@@ -26,6 +26,28 @@ For a local unsigned build:
 xcodebuild -project Soniqo.xcodeproj -scheme Soniqo -configuration Debug -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO build
 ```
 
+## Packaging
+
+This repository includes a GitHub Actions workflow for contributors or fork maintainers who want to build their own downloadable app bundle.
+
+To build from a fork or development branch, run the `Build and Release` workflow manually from GitHub Actions. To attach packaged files to a GitHub Release in your own fork, push a version tag:
+
+```sh
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+The workflow builds a universal macOS app (`arm64` and `x86_64`), sets the app version from the tag (`v1.0.0` becomes `1.0.0`), uses the GitHub Actions run number as the build number, ad-hoc signs the app, and packages:
+
+- `Soniqo-1.0.0.dmg`
+- `Soniqo-1.0.0-macOS-universal.zip`
+
+These self-built packages are not Apple-notarized. When testing a local or fork build, macOS may require right-clicking the app and choosing Open the first time, or removing quarantine after download:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Soniqo.app
+```
+
 ## Roadmap
 
 - Improve playback-window detection across browsers and media apps.

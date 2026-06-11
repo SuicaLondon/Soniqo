@@ -1,0 +1,106 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PROJECT: Soniqo.xcodeproj
+  SCHEME: Soniqo
+  CONFIGURATION: Release
+  DERIVED_DATA: build/DerivedData
+  APP_PATH: build/DerivedData/Build/Products/Release/Soniqo.app
+
+jobs:
+  build:
+    name: Build macOS app
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Resolve version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            APP_VERSION="${GITHUB_REF_NAME#v}"
+          else
+            APP_VERSION="0.0.0-dev"
+          fi
+
+          {
+            echo "APP_VERSION=$APP_VERSION"
+            echo "BUILD_NUMBER=$GITHUB_RUN_NUMBER"
+            echo "ZIP_PATH=dist/Soniqo-$APP_VERSION-macOS-universal.zip"
+            echo "DMG_PATH=dist/Soniqo-$APP_VERSION.dmg"
+          } >> "$GITHUB_ENV"
+
+      - name: Build universal app
+        run: |
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration "$CONFIGURATION" \
+            -derivedDataPath "$DERIVED_DATA" \
+            -destination "generic/platform=macOS" \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO \
+            ARCHS="arm64 x86_64" \
+            MARKETING_VERSION="$APP_VERSION" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            build
+
+      - name: Ad-hoc sign app
+        run: codesign --force --deep --sign - "$APP_PATH"
+
+      - name: Verify app bundle
+        run: |
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP_PATH/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP_PATH/Contents/Info.plist"
+          lipo -archs "$APP_PATH/Contents/MacOS/Soniqo"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+      - name: Package app
+        run: |
+          mkdir -p dist
+          ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
+
+          rm -rf build/dmg-root
+          mkdir -p build/dmg-root
+          cp -R "$APP_PATH" build/dmg-root/
+          ln -s /Applications build/dmg-root/Applications
+
+          hdiutil create \
+            -volname "Soniqo" \
+            -srcfolder build/dmg-root \
+            -ov \
+            -format UDZO \
+            "$DMG_PATH"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Soniqo-${{ env.APP_VERSION }}-macOS
+          path: |
+            ${{ env.ZIP_PATH }}
+            ${{ env.DMG_PATH }}
+
+      - name: Upload to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ZIP_PATH }}
+            ${{ env.DMG_PATH }}
+          generate_release_notes: true

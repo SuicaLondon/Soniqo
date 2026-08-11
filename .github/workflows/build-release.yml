@@ -230,7 +230,13 @@ jobs:
         shell: bash
         run: |
           ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
-          shasum -a 256 "$DMG_PATH" "$ZIP_PATH" > dist/SHA256SUMS
+          (
+            cd dist
+            shasum -a 256 \
+              "$(basename "$DMG_PATH")" \
+              "$(basename "$ZIP_PATH")" \
+              > SHA256SUMS
+          )
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7.0.1

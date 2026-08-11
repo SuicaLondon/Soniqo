@@ -15,7 +15,7 @@ struct SoniqoApp: App {
         MenuBarExtra {
             MenuBarView(controller: controller)
         } label: {
-            Label("Soniqo", systemImage: controller.isEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
+            Label("Soniqo", systemImage: "rectangle.2.swap")
         }
         .menuBarExtraStyle(.window)
     }

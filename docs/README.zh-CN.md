@@ -26,7 +26,7 @@ xcodebuild -project Soniqo.xcodeproj -scheme Soniqo -configuration Debug -derive
 
 ## 打包
 
-这个 repository 包含 GitHub Actions workflow，方便协作者或 fork 维护者自行构建可下载的 App bundle。
+这个 repository 包含 GitHub Actions workflow。分支、Pull Request 与手动运行会生成 ad-hoc 签名的开发产物；官方 repository 的版本 tag 则会生成 Developer ID 签名并经过 Apple 公证的正式版本。
 
 如果要从 fork 或开发分支构建，可以在 GitHub Actions 手动运行 `Build and Release` workflow。若要在自己的 fork 中把打包文件附到 GitHub Release，推送版本 tag：
 
@@ -35,13 +35,20 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
-workflow 会构建 universal macOS App（`arm64` 和 `x86_64`），从 tag 设置 App 版本（`v1.0.0` 会变成 `1.0.0`），使用 GitHub Actions run number 作为 build number，进行 ad-hoc 签名，并打包：
+workflow 会构建 universal macOS App（`arm64` 和 `x86_64`），从 tag 设置 App 版本（`v1.0.0` 会变成 `1.0.0`），使用 GitHub Actions run number 作为 build number，并打包：
 
 - `Soniqo-1.0.0.dmg`
 - `Soniqo-1.0.0-macOS-universal.zip`
+- `SHA256SUMS`
 
-这些自行构建的 package 没有经过 Apple notarization。测试本地或 fork build 时，macOS 可能会要求第一次打开时右键选择“打开”，或在下载后移除 quarantine：
+官方版本 tag 会使用 Developer ID Application 证书签名、提交 Apple 公证、staple 公证票证，并在发布前通过 Gatekeeper 检查。正式发布 workflow 需要以下 repository secrets：
 
-```sh
-xattr -dr com.apple.quarantine /Applications/Soniqo.app
+```text
+MACOS_CERTIFICATE
+MACOS_CERTIFICATE_PASSWORD
+APPLE_ID
+APPLE_APP_SPECIFIC_PASSWORD
+APPLE_TEAM_ID
 ```
+
+没有正式发布凭证时生成的开发产物只会以 ad-hoc 签名，不适合提供给普通用户。

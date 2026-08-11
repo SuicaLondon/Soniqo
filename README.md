@@ -28,7 +28,7 @@ xcodebuild -project Soniqo.xcodeproj -scheme Soniqo -configuration Debug -derive
 
 ## Packaging
 
-This repository includes a GitHub Actions workflow for contributors or fork maintainers who want to build their own downloadable app bundle.
+This repository includes a GitHub Actions workflow that builds downloadable app bundles. Branches, pull requests, and manual runs produce ad-hoc-signed development artifacts. Version tags in the official repository produce Developer ID-signed and Apple-notarized releases.
 
 To build from a fork or development branch, run the `Build and Release` workflow manually from GitHub Actions. To attach packaged files to a GitHub Release in your own fork, push a version tag:
 
@@ -37,16 +37,23 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
-The workflow builds a universal macOS app (`arm64` and `x86_64`), sets the app version from the tag (`v1.0.0` becomes `1.0.0`), uses the GitHub Actions run number as the build number, ad-hoc signs the app, and packages:
+The workflow builds a universal macOS app (`arm64` and `x86_64`), sets the app version from the tag (`v1.0.0` becomes `1.0.0`), uses the GitHub Actions run number as the build number, and packages:
 
 - `Soniqo-1.0.0.dmg`
 - `Soniqo-1.0.0-macOS-universal.zip`
+- `SHA256SUMS`
 
-These self-built packages are not Apple-notarized. When testing a local or fork build, macOS may require right-clicking the app and choosing Open the first time, or removing quarantine after download:
+Official tagged releases are signed with a Developer ID Application certificate, submitted to Apple's notary service, stapled, and checked with Gatekeeper before publication. The release workflow requires these repository secrets:
 
-```sh
-xattr -dr com.apple.quarantine /Applications/Soniqo.app
+```text
+MACOS_CERTIFICATE
+MACOS_CERTIFICATE_PASSWORD
+APPLE_ID
+APPLE_APP_SPECIFIC_PASSWORD
+APPLE_TEAM_ID
 ```
+
+Development artifacts produced without release credentials remain ad-hoc signed and are not intended for end-user distribution.
 
 ## Roadmap
 

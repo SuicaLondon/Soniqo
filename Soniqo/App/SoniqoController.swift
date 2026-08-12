@@ -12,6 +12,7 @@ final class SoniqoController: ObservableObject {
     @Published private(set) var playbackWindows: [TrackedWindow] = []
     @Published private(set) var audibleProcesses: [AudioProcess] = []
     @Published private(set) var statusMessage = "Automatic switching is off."
+    @Published private(set) var inventoryErrorMessage: String?
     @Published var preferences: RoutingPreferences {
         didSet {
             savePreferences()
@@ -24,6 +25,8 @@ final class SoniqoController: ObservableObject {
     private let displayService = DisplayService()
     private let windowTrackingService = WindowTrackingService()
     private var timerCancellable: AnyCancellable?
+    private var screenParametersCancellable: AnyCancellable?
+    private var volumeReadbackWorkItem: DispatchWorkItem?
     private var lastAudibleProcessIDs = Set<pid_t>()
 
     private let preferencesKey = "routingPreferences"
@@ -31,58 +34,173 @@ final class SoniqoController: ObservableObject {
     init() {
         preferences = Self.loadPreferences(key: preferencesKey)
         refreshInventory()
+        observeScreenChanges()
         updateTimer()
     }
 
     deinit {
         timerCancellable?.cancel()
+        screenParametersCancellable?.cancel()
+        volumeReadbackWorkItem?.cancel()
     }
 
     var isEnabled: Bool {
         preferences.isEnabled
     }
 
+    var monitorAudioStatuses: [MonitorAudioStatus] {
+        displays.map { display in
+            let mappedUID = mappedDeviceUID(for: display)
+            let mappedDevice = outputDevices.first { $0.uid == mappedUID }
+
+            return MonitorAudioStatus(
+                display: display,
+                mappedDeviceUID: mappedUID,
+                outputDevice: mappedDevice,
+                inventoryIsAvailable: inventoryErrorMessage == nil
+            )
+        }
+    }
+
+    var routableOutputDevices: [AudioOutputDevice] {
+        outputDevices.filter(\.isRoutable)
+    }
+
+    var hasUnknownOutputDevices: Bool {
+        outputDevices.contains { $0.routingAvailability == .unknown }
+    }
+
     func setEnabled(_ isEnabled: Bool) {
         preferences.isEnabled = isEnabled
         statusMessage = isEnabled ? "Automatic switching is on." : "Automatic switching is off."
 
-        if isEnabled {
+        if isEnabled, refreshInventory() {
             evaluateAndRoute()
         }
     }
 
-    func refreshInventory() {
-        displays = displayService.displays()
+    @discardableResult
+    func refreshInventory() -> Bool {
+        let refreshedDisplays = displayService.displays()
+        if displays != refreshedDisplays {
+            displays = refreshedDisplays
+        }
+
+        let refreshedDevices: [AudioOutputDevice]
+        do {
+            refreshedDevices = try audioOutputService.outputDevices()
+        } catch {
+            outputDevices = []
+            defaultOutputDevice = nil
+            inventoryErrorMessage = error.localizedDescription
+            return false
+        }
+
+        if outputDevices != refreshedDevices {
+            outputDevices = refreshedDevices
+        }
+        autoConfigureMissingPreferences()
 
         do {
-            outputDevices = try audioOutputService.outputDevices()
-            defaultOutputDevice = try audioOutputService.defaultOutputDevice()
-            autoConfigureMissingPreferences()
-            reconcilePreferencesWithConnectedDevices()
+            let refreshedDefault = try audioOutputService.defaultOutputDevice(in: refreshedDevices)
+            if defaultOutputDevice != refreshedDefault {
+                defaultOutputDevice = refreshedDefault
+            }
         } catch {
-            statusMessage = error.localizedDescription
+            defaultOutputDevice = nil
+            inventoryErrorMessage = error.localizedDescription
+            return false
         }
+
+        inventoryErrorMessage = nil
+        return true
     }
 
     func setMappedDevice(uid: String?, for display: DisplayInfo) {
+        guard mappedDeviceUID(for: display) != uid else {
+            return
+        }
+
+        var mappings = preferences.screenDeviceUIDs
+        mappings.removeValue(forKey: display.legacyStorageKey)
         if let uid {
-            preferences.screenDeviceUIDs[display.storageKey] = uid
+            mappings[display.storageKey] = uid
         } else {
-            preferences.screenDeviceUIDs.removeValue(forKey: display.storageKey)
+            mappings.removeValue(forKey: display.storageKey)
+        }
+        preferences.screenDeviceUIDs = mappings
+
+        if preferences.isEnabled, trackedDisplay?.id == display.id {
+            evaluateAndRoute()
         }
     }
 
     func mappedDeviceUID(for display: DisplayInfo) -> String? {
         preferences.screenDeviceUIDs[display.storageKey]
+            ?? preferences.screenDeviceUIDs[display.legacyStorageKey]
+    }
+
+    func selectMonitorForPlayback(_ display: DisplayInfo) {
+        guard !preferences.isEnabled else {
+            statusMessage = "Turn off Auto to switch outputs manually."
+            return
+        }
+
+        guard let mappedUID = mappedDeviceUID(for: display) else {
+            statusMessage = "Choose an audio output for \(display.name) first."
+            return
+        }
+
+        guard let device = outputDevices.first(where: { $0.uid == mappedUID }) else {
+            statusMessage = "The audio output mapped to \(display.name) is disconnected."
+            return
+        }
+
+        guard device.isRoutable else {
+            statusMessage = "\(device.displayName) cannot be selected right now."
+            return
+        }
+
+        route(to: mappedUID, reason: "Manual switch to \(display.name).")
+    }
+
+    func setVolume(_ level: Float, forDeviceUID uid: String) {
+        guard let device = outputDevices.first(where: { $0.uid == uid }) else {
+            statusMessage = "The selected audio output is no longer available."
+            return
+        }
+
+        do {
+            try audioOutputService.setVolume(level, for: device)
+            let normalizedLevel = min(max(level, 0), 1)
+            let updatedDevice = device.replacingVolumeState(
+                .level(normalizedLevel, muteState: device.volumeState.muteState)
+            )
+            outputDevices = outputDevices.map { candidate in
+                candidate.uid == uid ? updatedDevice : candidate
+            }
+
+            if defaultOutputDevice?.uid == uid {
+                defaultOutputDevice = updatedDevice
+            }
+            scheduleVolumeReadback()
+        } catch {
+            statusMessage = error.localizedDescription
+            _ = refreshInventory()
+        }
     }
 
     func routeNow() {
-        refreshInventory()
-        evaluateAndRoute()
+        if refreshInventory() {
+            evaluateAndRoute()
+        }
     }
 
     func autoConfigure() {
-        refreshInventory()
+        guard refreshInventory() else {
+            return
+        }
+
         autoConfigureMissingPreferences(overwriteExistingMappings: true)
         statusMessage = "Screen routing was auto-configured from connected devices."
 
@@ -102,7 +220,31 @@ final class SoniqoController: ObservableObject {
         timerCancellable = Timer.publish(every: 1.0, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
-                self?.evaluateAndRoute()
+                guard let self, self.refreshInventory() else {
+                    return
+                }
+
+                self.evaluateAndRoute()
+            }
+    }
+
+    private func scheduleVolumeReadback() {
+        volumeReadbackWorkItem?.cancel()
+
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.volumeReadbackWorkItem = nil
+            self?.refreshInventory()
+        }
+        volumeReadbackWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
+    }
+
+    private func observeScreenChanges() {
+        screenParametersCancellable = NotificationCenter.default
+            .publisher(for: NSApplication.didChangeScreenParametersNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.refreshInventory()
             }
     }
 
@@ -145,7 +287,7 @@ final class SoniqoController: ObservableObject {
 
         trackedDisplay = display
 
-        if let mappedUID = preferences.screenDeviceUIDs[display.storageKey] {
+        if let mappedUID = mappedDeviceUID(for: display) {
             route(to: mappedUID, reason: "\(window.ownerName) is on \(display.name).")
         } else {
             statusMessage = "\(display.name) has no mapped output."
@@ -164,7 +306,7 @@ final class SoniqoController: ObservableObject {
             }
 
             try audioOutputService.setDefaultOutputDevice(uid: uid)
-            defaultOutputDevice = try audioOutputService.defaultOutputDevice()
+            defaultOutputDevice = outputDevices.first { $0.uid == uid }
             let outputName = defaultOutputDevice?.displayName ?? "selected output"
             statusMessage = "\(reason) Routed to \(outputName)."
         } catch {
@@ -172,37 +314,71 @@ final class SoniqoController: ObservableObject {
         }
     }
 
-    private func reconcilePreferencesWithConnectedDevices() {
-        let connectedUIDs = Set(outputDevices.map(\.uid))
-
-        preferences.screenDeviceUIDs = preferences.screenDeviceUIDs.filter { _, uid in
-            connectedUIDs.contains(uid)
-        }
-    }
-
     private func autoConfigureMissingPreferences(overwriteExistingMappings: Bool = false) {
+        var mappings = preferences.screenDeviceUIDs
+        var availableDeviceUIDs = Set(outputDevices.filter(\.isRoutable).map(\.uid))
+
+        for display in displays where mappings[display.storageKey] == nil {
+            if let legacyUID = mappings.removeValue(forKey: display.legacyStorageKey) {
+                mappings[display.storageKey] = legacyUID
+            }
+        }
+
+        if !overwriteExistingMappings {
+            for display in displays {
+                if let mappedUID = mappings[display.storageKey] {
+                    availableDeviceUIDs.remove(mappedUID)
+                }
+            }
+        }
+
         for display in displays {
-            if !overwriteExistingMappings, preferences.screenDeviceUIDs[display.storageKey] != nil {
+            if !overwriteExistingMappings, mappings[display.storageKey] != nil {
                 continue
             }
 
-            if let matchedDevice = bestOutputMatch(for: display) {
-                preferences.screenDeviceUIDs[display.storageKey] = matchedDevice.uid
+            let candidates = outputDevices.filter { availableDeviceUIDs.contains($0.uid) }
+            if let matchedDevice = bestOutputMatch(for: display, candidates: candidates) {
+                mappings[display.storageKey] = matchedDevice.uid
+                availableDeviceUIDs.remove(matchedDevice.uid)
             }
+        }
+
+        if mappings != preferences.screenDeviceUIDs {
+            preferences.screenDeviceUIDs = mappings
         }
     }
 
-    private func bestOutputMatch(for display: DisplayInfo) -> AudioOutputDevice? {
+    private func bestOutputMatch(
+        for display: DisplayInfo,
+        candidates: [AudioOutputDevice]
+    ) -> AudioOutputDevice? {
+        let routableDevices = candidates.filter(\.isRoutable)
         let displayName = normalizedName(display.name)
 
-        if let exactMatch = outputDevices.first(where: { normalizedName($0.displayName) == displayName }) {
-            return exactMatch
+        let exactMatches = routableDevices.filter { normalizedName($0.displayName) == displayName }
+        if exactMatches.count == 1 {
+            return exactMatches[0]
         }
 
-        return outputDevices.first { device in
+        if display.isBuiltIn,
+           let builtInOutput = routableDevices.first(where: \.isBuiltIn) {
+            return builtInOutput
+        }
+
+        let partialMatches = routableDevices.filter { device in
             let deviceName = normalizedName(device.displayName)
             return displayName.contains(deviceName) || deviceName.contains(displayName)
         }
+        if partialMatches.count == 1 {
+            return partialMatches[0]
+        }
+
+        if displays.count == 1, candidates.count == 1 {
+            return routableDevices[0]
+        }
+
+        return nil
     }
 
     private func normalizedName(_ name: String) -> String {
